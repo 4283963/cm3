@@ -46,7 +46,7 @@ func startAllocationTicker(sm *services.StationManager) {
 	for {
 		select {
 		case <-allocateTicker.C:
-			_, _ = sm.RunPowerAllocation()
+			_, _, _ = sm.RunPowerAllocation()
 
 		case <-socSimTicker.C:
 			simulateSOCConsumption(sm)

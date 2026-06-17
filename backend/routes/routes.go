@@ -33,6 +33,7 @@ func SetupRoutes(
 			station.POST("/update-soc", stationHandler.UpdateSOC)
 			station.POST("/allocate", stationHandler.TriggerAllocation)
 			station.POST("/hardware-frame", stationHandler.HandleHardwareFrame)
+			station.POST("/grid-limit", stationHandler.SetGridLimit)
 		}
 	}
 

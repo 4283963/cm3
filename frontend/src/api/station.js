@@ -21,6 +21,7 @@ export const stationApi = {
   getPowerHistory: (params) => request.get('/station/power-history', { params }),
   updateSOC: (data) => request.post('/station/update-soc', data),
   triggerAllocation: () => request.post('/station/allocate'),
+  setGridLimit: (data) => request.post('/station/grid-limit', data),
 }
 
 export default request

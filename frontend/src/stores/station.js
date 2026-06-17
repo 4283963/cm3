@@ -6,8 +6,14 @@ export const useStationStore = defineStore('station', {
     chargers: [],
     stationStatus: {
       totalMaxPower: 500,
+      currentLimitPower: 500,
+      gridLimitMode: false,
+      gridLimitRatio: 1.0,
       currentTotalPower: 0,
+      vipProtectedPower: 0,
+      normalReducedPower: 0,
       activeChargers: 0,
+      vipChargers: 0,
       idleChargers: 10,
       faultChargers: 0,
       totalChargingVehicles: 0,
@@ -15,14 +21,22 @@ export const useStationStore = defineStore('station', {
     powerHistory: [],
     allocationHistory: [],
     wsConnected: false,
+    gridLimitSwitching: false,
   }),
 
   getters: {
     activeChargersList: (state) => state.chargers.filter(c => c.status === 'charging' || c.status === 'trickle'),
-    powerUsagePercent: (state) =>
-      state.stationStatus.totalMaxPower > 0
-        ? (state.stationStatus.currentTotalPower / state.stationStatus.totalMaxPower) * 100
-        : 0,
+    powerUsagePercent: (state) => {
+      const base = state.stationStatus.gridLimitMode
+        ? state.stationStatus.currentLimitPower || state.stationStatus.totalMaxPower
+        : state.stationStatus.totalMaxPower
+      return base > 0 ? (state.stationStatus.currentTotalPower / base) * 100 : 0
+    },
+    vipChargersList: (state) =>
+      state.chargers.filter(c => c.status === 'charging' || c.status === 'trickle')
+        .filter(c => c.currentVehicle && c.currentVehicle.isVip),
+    gridLimitCutPercent: (state) =>
+      state.stationStatus.gridLimitMode ? ((1 - state.stationStatus.gridLimitRatio) * 100).toFixed(0) : 0,
   },
 
   actions: {
@@ -79,10 +93,15 @@ export const useStationStore = defineStore('station', {
 
     updateChargers(chargers) {
       this.chargers = chargers
-      this.stationStatus.activeChargers = chargers.filter(c => c.status === 'charging' || c.status === 'trickle').length
+      const actives = chargers.filter(c => c.status === 'charging' || c.status === 'trickle')
+      this.stationStatus.activeChargers = actives.length
+      this.stationStatus.vipChargers = actives.filter(c => c.currentVehicle && c.currentVehicle.isVip).length
       this.stationStatus.idleChargers = chargers.filter(c => c.status === 'idle').length
       this.stationStatus.faultChargers = chargers.filter(c => c.status === 'fault').length
       this.stationStatus.currentTotalPower = chargers.reduce((sum, c) => sum + (c.currentPower || 0), 0)
+      this.stationStatus.vipProtectedPower = actives
+        .filter(c => c.currentVehicle && c.currentVehicle.isVip)
+        .reduce((sum, c) => sum + (c.currentPower || 0), 0)
     },
 
     updateStationStatus(status) {
@@ -101,6 +120,23 @@ export const useStationStore = defineStore('station', {
 
     setWsConnected(connected) {
       this.wsConnected = connected
+    },
+
+    async setGridLimitMode(enabled, ratio = 0.5) {
+      this.gridLimitSwitching = true
+      try {
+        const res = await stationApi.setGridLimit({ enabled, ratio })
+        if (res.success) {
+          if (res.data && res.data.stationStatus) {
+            this.updateStationStatus(res.data.stationStatus)
+          }
+          await this.fetchChargers()
+          await this.fetchPowerHistory()
+        }
+        return res
+      } finally {
+        this.gridLimitSwitching = false
+      }
     },
   },
 })

@@ -1,7 +1,7 @@
 <template>
   <div
     class="charger-card"
-    :class="[charger.status]"
+    :class="[charger.status, { 'is-vip': isVIP, 'is-cut': isPowerCut }]"
     @click="isCharging && $emit('view-detail', charger)"
   >
     <div class="card-top">
@@ -9,13 +9,28 @@
         <span class="label">桩号</span>
         <span class="name">{{ charger.name }}</span>
       </div>
-      <div class="status-badge">
-        <i class="status-dot"></i>
-        {{ statusText }}
+      <div class="status-tags">
+        <el-tag v-if="isVIP" type="warning" effect="dark" size="small" class="vip-tag">
+          <el-icon><Medal /></el-icon>
+          VIP
+        </el-tag>
+        <div class="status-badge">
+          <i class="status-dot"></i>
+          {{ statusText }}
+        </div>
       </div>
     </div>
 
     <div v-if="isChargingOrTrickle && charger.currentVehicle" class="charging-info">
+      <div v-if="isPowerCut" class="power-cut-tip">
+        <el-icon><TrendCharts /></el-icon>
+        电网限电 · 功率已削减 {{ cutPercent }}%
+      </div>
+      <div v-else-if="isVIP && inGridLimitMode" class="vip-protect-tip">
+        <el-icon><Medal /></el-icon>
+        VIP · 功率优先保障
+      </div>
+
       <div class="vehicle-info">
         <el-icon><Van /></el-icon>
         <span class="plate">{{ charger.currentVehicle.licensePlate || charger.currentVehicle.vin }}</span>
@@ -94,12 +109,15 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Van, Power, Warning, Switch, Cpu } from '@element-plus/icons-vue'
+import { Van, Power, Warning, Switch, Cpu, Medal, TrendCharts } from '@element-plus/icons-vue'
+import { useStationStore } from '../stores/station'
 
 const props = defineProps({
   charger: { type: Object, required: true },
 })
 defineEmits(['plug-out', 'view-detail'])
+
+const store = useStationStore()
 
 const STATUS_MAP = {
   charging: '充电中',
@@ -114,6 +132,26 @@ const isChargingOrTrickle = computed(() =>
   props.charger.status === 'charging' || props.charger.status === 'trickle'
 )
 const statusText = computed(() => STATUS_MAP[props.charger.status] || props.charger.status)
+const isVIP = computed(() => isChargingOrTrickle.value && props.charger.currentVehicle?.isVip)
+const inGridLimitMode = computed(() => store.stationStatus.gridLimitMode)
+
+const isPowerCut = computed(() => {
+  if (!isChargingOrTrickle.value || !props.charger.currentVehicle) return false
+  if (isVIP.value) return false
+  if (!inGridLimitMode.value) return false
+  const p = props.charger.currentPower || 0
+  const maxP = props.charger.currentVehicle.maxAcceptPower
+  if (!maxP) return false
+  return p < maxP * 0.85
+})
+
+const cutPercent = computed(() => {
+  if (!props.charger.currentVehicle) return 0
+  const p = props.charger.currentPower || 0
+  const req = props.charger.currentVehicle.maxAcceptPower
+  if (!req) return 0
+  return Math.max(0, Math.round((1 - p / req) * 100))
+})
 
 const socPercent = computed(() => {
   if (props.charger.currentVehicle) {
@@ -437,5 +475,61 @@ const formatTime = (t) => {
 .trickle-bar {
   animation-duration: 4s !important;
   filter: saturate(0.7);
+}
+
+.status-tags {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+
+  .vip-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 8px;
+    background: linear-gradient(135deg, #b88230, #e6a23c);
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+}
+
+.power-cut-tip,
+.vip-protect-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.power-cut-tip {
+  background: rgba(245, 108, 108, 0.12);
+  border: 1px dashed rgba(245, 108, 108, 0.45);
+  color: #f56c6c;
+}
+
+.vip-protect-tip {
+  background: rgba(230, 162, 60, 0.12);
+  border: 1px dashed rgba(230, 162, 60, 0.45);
+  color: #e6a23c;
+}
+
+.charger-card.is-vip {
+  border-width: 1.5px;
+  border-color: rgba(230, 162, 60, 0.5);
+  background: linear-gradient(145deg, rgba(50, 42, 26, 0.55), rgba(19, 38, 66, 0.85));
+}
+
+.charger-card.is-cut {
+  border-style: dashed;
+  border-color: rgba(245, 108, 108, 0.5);
+
+  .power-section .p-value.highlight {
+    color: #f56c6c !important;
+  }
 }
 </style>

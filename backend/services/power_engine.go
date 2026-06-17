@@ -9,11 +9,34 @@ import (
 )
 
 type PowerAllocationEngine struct {
-	cfg *config.StationConfig
+	cfg            *config.StationConfig
+	gridLimitMode  bool
+	gridLimitRatio float64
 }
 
 func NewPowerAllocationEngine(cfg *config.StationConfig) *PowerAllocationEngine {
-	return &PowerAllocationEngine{cfg: cfg}
+	return &PowerAllocationEngine{
+		cfg:            cfg,
+		gridLimitMode:  false,
+		gridLimitRatio: 1.0,
+	}
+}
+
+func (e *PowerAllocationEngine) SetGridLimit(enabled bool, ratio float64) {
+	e.gridLimitMode = enabled
+	if enabled {
+		if ratio <= 0 || ratio > 1 {
+			ratio = e.cfg.DefaultLimitRatio
+		}
+		e.gridLimitRatio = ratio
+	} else {
+		e.gridLimitRatio = 1.0
+	}
+}
+
+func (e *PowerAllocationEngine) GetGridLimitState() (bool, float64, float64) {
+	currentLimit := e.cfg.TotalMaxPower * e.gridLimitRatio
+	return e.gridLimitMode, e.gridLimitRatio, currentLimit
 }
 
 type ChargingVehicle struct {
@@ -24,6 +47,7 @@ type ChargingVehicle struct {
 	BatteryCapacity       float64
 	TargetSOC             float64
 	CurrentAllocatedPower float64
+	IsVIP                 bool
 }
 
 type AllocationResult struct {
@@ -31,20 +55,45 @@ type AllocationResult struct {
 	VIN            string
 	AllocatedPower float64
 	Reason         string
+	IsVIP          bool
+	WasCut         bool
+	Protected      bool
 }
 
-func (e *PowerAllocationEngine) AllocatePower(vehicles []ChargingVehicle) map[int]*AllocationResult {
+type AllocationSummary struct {
+	RequestedTotal    float64
+	LimitedTotal      float64
+	AllocatedTotal    float64
+	VipProtectedPower float64
+	NormalCutPower    float64
+	GridLimitEnabled  bool
+	GridLimitRatio    float64
+	VipCount          int
+	NormalCount       int
+}
+
+func (e *PowerAllocationEngine) AllocatePower(vehicles []ChargingVehicle) (map[int]*AllocationResult, AllocationSummary) {
 	results := make(map[int]*AllocationResult)
+	summary := AllocationSummary{}
 	activeCount := len(vehicles)
 
 	if activeCount == 0 {
-		return results
+		return results, summary
 	}
 
+	gridLimitEnabled, gridLimitRatio, currentLimitPower := e.GetGridLimitState()
+	summary.GridLimitEnabled = gridLimitEnabled
+	summary.GridLimitRatio = gridLimitRatio
+	summary.LimitedTotal = currentLimitPower
+
+	vipList := make([]ChargingVehicle, 0)
+	normalList := make([]ChargingVehicle, 0)
 	totalRequestedPower := 0.0
 	requestedPowers := make(map[int]float64)
 	weights := make(map[int]float64)
 	totalWeight := 0.0
+	vipTotalWeight := 0.0
+	normalTotalWeight := 0.0
 
 	for _, v := range vehicles {
 		requested := e.calculateRequestedPower(v)
@@ -55,41 +104,132 @@ func (e *PowerAllocationEngine) AllocatePower(vehicles []ChargingVehicle) map[in
 		weights[v.ChargerID] = weight
 		totalWeight += weight
 
+		if v.IsVIP {
+			vipList = append(vipList, v)
+			vipTotalWeight += weight
+			summary.VipCount++
+		} else {
+			normalList = append(normalList, v)
+			normalTotalWeight += weight
+			summary.NormalCount++
+		}
+
 		results[v.ChargerID] = &AllocationResult{
 			ChargerID: v.ChargerID,
 			VIN:       v.VIN,
+			IsVIP:     v.IsVIP,
 		}
 	}
 
-	if totalRequestedPower <= e.cfg.TotalMaxPower {
+	summary.RequestedTotal = totalRequestedPower
+	effectiveMaxPower := currentLimitPower
+
+	if totalRequestedPower <= effectiveMaxPower {
 		for _, v := range vehicles {
 			results[v.ChargerID].AllocatedPower = requestedPowers[v.ChargerID]
-			results[v.ChargerID].Reason = "功率充足，按需求分配"
+			if gridLimitEnabled {
+				if v.IsVIP {
+					results[v.ChargerID].Reason = "限电模式，VIP优先保障，功率充足"
+					results[v.ChargerID].Protected = true
+				} else {
+					results[v.ChargerID].Reason = "限电模式，功率充足按需分配"
+				}
+			} else {
+				results[v.ChargerID].Reason = "功率充足，按需求分配"
+			}
+			summary.AllocatedTotal += results[v.ChargerID].AllocatedPower
+			if v.IsVIP {
+				summary.VipProtectedPower += results[v.ChargerID].AllocatedPower
+			}
 		}
-		e.saveAllocationRecords(results, vehicles, totalRequestedPower)
-		return results
+		e.saveAllocationRecords(results, vehicles, effectiveMaxPower)
+		return results, summary
 	}
 
-	for _, v := range vehicles {
-		ratio := weights[v.ChargerID] / totalWeight
-		allocated := e.cfg.TotalMaxPower * ratio
+	vipRequestedTotal := 0.0
+	for _, v := range vipList {
+		vipRequestedTotal += requestedPowers[v.ChargerID]
+	}
+	normalRequestedTotal := totalRequestedPower - vipRequestedTotal
 
-		if allocated > requestedPowers[v.ChargerID] {
-			surplus := allocated - requestedPowers[v.ChargerID]
-			allocated = requestedPowers[v.ChargerID]
+	remainingAfterVip := effectiveMaxPower
+	vipActualAllocated := 0.0
+
+	if gridLimitEnabled {
+		vipProtectRatio := e.cfg.VipPowerProtect
+		for _, v := range vipList {
+			allocated := requestedPowers[v.ChargerID] * vipProtectRatio
+			if allocated > requestedPowers[v.ChargerID] {
+				allocated = requestedPowers[v.ChargerID]
+			}
+			if remainingAfterVip-allocated < 0 {
+				allocated = remainingAfterVip
+			}
 			results[v.ChargerID].AllocatedPower = allocated
-			results[v.ChargerID].Reason = "满足需求，多余功率重新分配"
+			results[v.ChargerID].Protected = true
+			results[v.ChargerID].Reason = "限电模式·VIP保障：优先分配功率"
+			remainingAfterVip -= allocated
+			vipActualAllocated += allocated
+		}
 
-			remainingVehicles := make([]ChargingVehicle, 0)
-			for _, vv := range vehicles {
-				if results[vv.ChargerID].AllocatedPower < requestedPowers[vv.ChargerID] {
-					remainingVehicles = append(remainingVehicles, vv)
+		summary.VipProtectedPower = vipActualAllocated
+		normalAvailable := remainingAfterVip
+		_ = normalAvailable
+
+		if normalTotalWeight > 0 && len(normalList) > 0 {
+			for _, v := range normalList {
+				ratio := weights[v.ChargerID] / normalTotalWeight
+				allocated := remainingAfterVip * ratio
+
+				if allocated > requestedPowers[v.ChargerID] {
+					surplus := allocated - requestedPowers[v.ChargerID]
+					allocated = requestedPowers[v.ChargerID]
+					results[v.ChargerID].AllocatedPower = allocated
+					results[v.ChargerID].WasCut = (allocated < requestedPowers[v.ChargerID])
+					results[v.ChargerID].Reason = "限电模式·普通用户：按SOC权重分配(已限电)"
+					otherNormals := make([]ChargingVehicle, 0)
+					for _, vv := range normalList {
+						if vv.ChargerID != v.ChargerID && results[vv.ChargerID].AllocatedPower < requestedPowers[vv.ChargerID] {
+							otherNormals = append(otherNormals, vv)
+						}
+					}
+					e.redistributeSurplus(results, otherNormals, requestedPowers, surplus)
+				} else {
+					results[v.ChargerID].AllocatedPower = allocated
+					results[v.ChargerID].WasCut = true
+					cutPct := (1 - allocated/requestedPowers[v.ChargerID]) * 100
+					results[v.ChargerID].Reason = fmt.Sprintf("限电模式·普通用户：被削减%.0f%%，按SOC权重分配", cutPct)
 				}
 			}
-			e.redistributeSurplus(results, remainingVehicles, requestedPowers, surplus)
-		} else {
-			results[v.ChargerID].AllocatedPower = allocated
-			results[v.ChargerID].Reason = fmt.Sprintf("按SOC权重分配(权重:%.2f)", weights[v.ChargerID])
+		}
+
+		normalActualAllocated := 0.0
+		for _, v := range normalList {
+			normalActualAllocated += results[v.ChargerID].AllocatedPower
+		}
+		summary.NormalCutPower = normalRequestedTotal - normalActualAllocated
+	} else {
+		for _, v := range vehicles {
+			ratio := weights[v.ChargerID] / totalWeight
+			allocated := effectiveMaxPower * ratio
+
+			if allocated > requestedPowers[v.ChargerID] {
+				surplus := allocated - requestedPowers[v.ChargerID]
+				allocated = requestedPowers[v.ChargerID]
+				results[v.ChargerID].AllocatedPower = allocated
+				results[v.ChargerID].Reason = "满足需求，多余功率重新分配"
+
+				remainingVehicles := make([]ChargingVehicle, 0)
+				for _, vv := range vehicles {
+					if results[vv.ChargerID].AllocatedPower < requestedPowers[vv.ChargerID] {
+						remainingVehicles = append(remainingVehicles, vv)
+					}
+				}
+				e.redistributeSurplus(results, remainingVehicles, requestedPowers, surplus)
+			} else {
+				results[v.ChargerID].AllocatedPower = allocated
+				results[v.ChargerID].Reason = fmt.Sprintf("按SOC权重分配(权重:%.2f)", weights[v.ChargerID])
+			}
 		}
 	}
 
@@ -108,8 +248,19 @@ func (e *PowerAllocationEngine) AllocatePower(vehicles []ChargingVehicle) map[in
 		}
 	}
 
-	e.saveAllocationRecords(results, vehicles, e.cfg.TotalMaxPower)
-	return results
+	finalTotal := 0.0
+	vipFinal := 0.0
+	for _, r := range results {
+		finalTotal += r.AllocatedPower
+		if r.IsVIP {
+			vipFinal += r.AllocatedPower
+		}
+	}
+	summary.AllocatedTotal = finalTotal
+	summary.VipProtectedPower = vipFinal
+
+	e.saveAllocationRecords(results, vehicles, effectiveMaxPower)
+	return results, summary
 }
 
 func (e *PowerAllocationEngine) calculateRequestedPower(v ChargingVehicle) float64 {
@@ -205,13 +356,9 @@ func (e *PowerAllocationEngine) saveAllocationRecords(results map[int]*Allocatio
 	now := time.Now()
 	records := make([]models.PowerAllocationRecord, 0, len(vehicles))
 
-	chargerInfo := make(map[int]models.Vehicle)
+	chargerInfo := make(map[int]ChargingVehicle)
 	for _, v := range vehicles {
-		chargerInfo[v.ChargerID] = models.Vehicle{
-			CurrentSOC:     v.CurrentSOC,
-			MaxAcceptPower: v.MaxAcceptPower,
-			VIN:            v.VIN,
-		}
+		chargerInfo[v.ChargerID] = v
 	}
 
 	for chargerID, result := range results {
@@ -220,6 +367,7 @@ func (e *PowerAllocationEngine) saveAllocationRecords(results map[int]*Allocatio
 			Timestamp:      now,
 			ChargerID:      chargerID,
 			VehicleVIN:     info.VIN,
+			IsVIP:          info.IsVIP,
 			CurrentSOC:     info.CurrentSOC,
 			MaxPower:       info.MaxAcceptPower,
 			AllocatedPower: result.AllocatedPower,

@@ -192,7 +192,7 @@ func (h *StationHandler) UpdateSOC(c *gin.Context) {
 }
 
 func (h *StationHandler) TriggerAllocation(c *gin.Context) {
-	results, err := h.stationManager.RunPowerAllocation()
+	results, _, err := h.stationManager.RunPowerAllocation()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -205,6 +205,39 @@ func (h *StationHandler) TriggerAllocation(c *gin.Context) {
 		"success": true,
 		"message": "功率分配完成",
 		"data":    results,
+	})
+}
+
+func (h *StationHandler) SetGridLimit(c *gin.Context) {
+	var req services.GridLimitRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	summary, err := h.stationManager.SetGridLimitMode(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "限电模式切换失败: " + err.Error(),
+		})
+		return
+	}
+
+	status, _ := h.stationManager.GetStationStatus()
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "电网限电模式已切换，1秒内完成功率调整",
+		"data": gin.H{
+			"gridLimitEnabled": summary.GridLimitEnabled,
+			"gridLimitRatio":   summary.GridLimitRatio,
+			"summary":          summary,
+			"stationStatus":    status,
+		},
 	})
 }
 

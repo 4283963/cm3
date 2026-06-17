@@ -16,8 +16,10 @@ type DatabaseConfig struct {
 }
 
 type StationConfig struct {
-	TotalMaxPower float64
-	ChargerCount  int
+	TotalMaxPower     float64
+	ChargerCount      int
+	DefaultLimitRatio float64
+	VipPowerProtect   float64
 }
 
 func Load() *Config {
@@ -30,8 +32,10 @@ func Load() *Config {
 			DSN: "root:password@tcp(127.0.0.1:3306)/supercharger?charset=utf8mb4&parseTime=True&loc=Local",
 		},
 		Station: StationConfig{
-			TotalMaxPower: 500.0,
-			ChargerCount:  10,
+			TotalMaxPower:     500.0,
+			ChargerCount:      10,
+			DefaultLimitRatio: 0.5,
+			VipPowerProtect:   1.0,
 		},
 	}
 }

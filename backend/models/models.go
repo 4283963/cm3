@@ -24,6 +24,7 @@ type Vehicle struct {
 	MaxAcceptPower   float64       `json:"maxAcceptPower"`
 	AllocatedPower   float64       `json:"allocatedPower"`
 	TargetSOC        float64       `gorm:"default:100" json:"targetSoc"`
+	IsVIP            bool          `gorm:"default:false;index" json:"isVip"`
 	StartTime        *time.Time    `json:"startTime"`
 	EstimatedEndTime *time.Time    `json:"estimatedEndTime"`
 	Status           ChargerStatus `gorm:"size:20;default:idle" json:"status"`
@@ -36,6 +37,7 @@ type PowerAllocationRecord struct {
 	Timestamp      time.Time `gorm:"index;not null" json:"timestamp"`
 	ChargerID      int       `gorm:"index;not null" json:"chargerId"`
 	VehicleVIN     string    `gorm:"size:50" json:"vehicleVin"`
+	IsVIP          bool      `gorm:"default:false" json:"isVip"`
 	CurrentSOC     float64   `json:"currentSoc"`
 	MaxPower       float64   `json:"maxPower"`
 	AllocatedPower float64   `json:"allocatedPower"`
@@ -60,8 +62,14 @@ type StationStatus struct {
 	ID                    uint      `gorm:"primaryKey" json:"id"`
 	Timestamp             time.Time `gorm:"index" json:"timestamp"`
 	TotalMaxPower         float64   `json:"totalMaxPower"`
+	CurrentLimitPower     float64   `json:"currentLimitPower"`
+	GridLimitMode         bool      `gorm:"default:false" json:"gridLimitMode"`
+	GridLimitRatio        float64   `gorm:"default:1.0" json:"gridLimitRatio"`
 	CurrentTotalPower     float64   `json:"currentTotalPower"`
+	VipProtectedPower     float64   `json:"vipProtectedPower"`
+	NormalReducedPower    float64   `json:"normalReducedPower"`
 	ActiveChargers        int       `json:"activeChargers"`
+	VipChargers           int       `json:"vipChargers"`
 	IdleChargers          int       `json:"idleChargers"`
 	FaultChargers         int       `json:"faultChargers"`
 	TotalChargingVehicles int       `json:"totalChargingVehicles"`

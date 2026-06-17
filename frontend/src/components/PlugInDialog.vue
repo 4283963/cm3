@@ -67,6 +67,16 @@
           <el-radio :value="150">150 kW</el-radio>
         </el-radio-group>
       </el-form-item>
+
+      <el-form-item label="车主等级">
+        <el-radio-group v-model="form.isVip">
+          <el-radio :value="false">普通车主</el-radio>
+          <el-radio :value="true">
+            <el-tag type="warning" effect="dark" size="small" style="margin-right: 4px;">VIP</el-tag>
+            VIP 套餐车主（电网限电时优先保电）
+          </el-radio>
+        </el-radio-group>
+      </el-form-item>
     </el-form>
 
     <template #footer>
@@ -104,6 +114,7 @@ const form = reactive({
   currentSOC: 30,
   targetSOC: 90,
   maxAcceptPower: 120,
+  isVip: false,
 })
 
 const availableChargers = computed(() => {

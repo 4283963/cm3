@@ -34,10 +34,16 @@ type PlugInRequest struct {
 	CurrentSOC      float64 `json:"currentSoc" binding:"required"`
 	MaxAcceptPower  float64 `json:"maxAcceptPower" binding:"required"`
 	TargetSOC       float64 `json:"targetSoc"`
+	IsVIP           bool    `json:"isVip"`
 }
 
 type PlugOutRequest struct {
 	ChargerID int `json:"chargerId" binding:"required"`
+}
+
+type GridLimitRequest struct {
+	Enabled bool    `json:"enabled"`
+	Ratio   float64 `json:"ratio"`
 }
 
 func (m *StationManager) PlugIn(req PlugInRequest) (*models.Vehicle, error) {
@@ -67,6 +73,7 @@ func (m *StationManager) PlugIn(req PlugInRequest) (*models.Vehicle, error) {
 		CurrentSOC:      req.CurrentSOC,
 		MaxAcceptPower:  req.MaxAcceptPower,
 		TargetSOC:       req.TargetSOC,
+		IsVIP:           req.IsVIP,
 		StartTime:       &now,
 		Status:          models.ChargerCharging,
 	}
@@ -80,7 +87,7 @@ func (m *StationManager) PlugIn(req PlugInRequest) (*models.Vehicle, error) {
 	charger.LastUpdate = now
 	database.DB.Save(charger)
 
-	allocations, err := m.RunPowerAllocation()
+	allocations, _, err := m.RunPowerAllocation()
 	if err != nil {
 		return vehicle, nil
 	}
@@ -96,6 +103,7 @@ func (m *StationManager) PlugIn(req PlugInRequest) (*models.Vehicle, error) {
 				MaxAcceptPower:  req.MaxAcceptPower,
 				BatteryCapacity: req.BatteryCapacity,
 				TargetSOC:       req.TargetSOC,
+				IsVIP:           req.IsVIP,
 			}
 			vehicle.EstimatedEndTime = CalculateEstimatedEndTime(cv, allocation.AllocatedPower)
 			database.DB.Save(vehicle)
@@ -127,11 +135,11 @@ func (m *StationManager) PlugOut(req PlugOutRequest) error {
 	charger.LastUpdate = now
 	database.DB.Save(charger)
 
-	_, _ = m.RunPowerAllocation()
+	_, _, _ = m.RunPowerAllocation()
 	return nil
 }
 
-func (m *StationManager) RunPowerAllocation() (map[int]*AllocationResult, error) {
+func (m *StationManager) RunPowerAllocation() (map[int]*AllocationResult, AllocationSummary, error) {
 	var chargingVehicles []models.Vehicle
 	database.DB.Where("status IN ?", []models.ChargerStatus{models.ChargerCharging, models.ChargerTrickle}).Find(&chargingVehicles)
 
@@ -145,17 +153,22 @@ func (m *StationManager) RunPowerAllocation() (map[int]*AllocationResult, error)
 			BatteryCapacity:       v.BatteryCapacity,
 			TargetSOC:             v.TargetSOC,
 			CurrentAllocatedPower: v.AllocatedPower,
+			IsVIP:                 v.IsVIP,
 		})
 	}
 
-	results := m.powerEngine.AllocatePower(cvs)
+	results, summary := m.powerEngine.AllocatePower(cvs)
 
 	now := time.Now()
 	totalPower := 0.0
+	vipCount := 0
 	for _, v := range chargingVehicles {
 		if result, ok := results[v.ChargerID]; ok {
 			v.AllocatedPower = result.AllocatedPower
 			totalPower += result.AllocatedPower
+			if v.IsVIP {
+				vipCount++
+			}
 
 			cv := ChargingVehicle{
 				ChargerID:       v.ChargerID,
@@ -163,6 +176,7 @@ func (m *StationManager) RunPowerAllocation() (map[int]*AllocationResult, error)
 				MaxAcceptPower:  v.MaxAcceptPower,
 				BatteryCapacity: v.BatteryCapacity,
 				TargetSOC:       v.TargetSOC,
+				IsVIP:           v.IsVIP,
 			}
 			v.EstimatedEndTime = CalculateEstimatedEndTime(cv, result.AllocatedPower)
 			database.DB.Save(&v)
@@ -176,16 +190,16 @@ func (m *StationManager) RunPowerAllocation() (map[int]*AllocationResult, error)
 		}
 	}
 
-	m.saveStationStatus(totalPower)
+	m.saveStationStatus(totalPower, summary, vipCount)
 	m.wsHub.BroadcastAllocationEvent(results)
 
 	chargers, _ := m.GetAllChargers()
 	m.wsHub.BroadcastChargersUpdate(chargers)
 
-	return results, nil
+	return results, summary, nil
 }
 
-func (m *StationManager) saveStationStatus(totalPower float64) {
+func (m *StationManager) saveStationStatus(totalPower float64, summary AllocationSummary, vipCount int) {
 	var chargers []models.Charger
 	database.DB.Find(&chargers)
 
@@ -209,17 +223,25 @@ func (m *StationManager) saveStationStatus(totalPower float64) {
 			idle++
 		}
 	}
+	_ = trickle
+
+	_, _, currentLimitPower := m.powerEngine.GetGridLimitState()
 
 	status := models.StationStatus{
 		Timestamp:             time.Now(),
 		TotalMaxPower:         m.cfg.TotalMaxPower,
+		CurrentLimitPower:     currentLimitPower,
+		GridLimitMode:         summary.GridLimitEnabled,
+		GridLimitRatio:        summary.GridLimitRatio,
 		CurrentTotalPower:     totalPower,
+		VipProtectedPower:     summary.VipProtectedPower,
+		NormalReducedPower:    summary.NormalCutPower,
 		ActiveChargers:        active,
+		VipChargers:           vipCount,
 		IdleChargers:          idle,
 		FaultChargers:         fault,
 		TotalChargingVehicles: active,
 	}
-	_ = trickle
 	database.DB.Create(&status)
 	m.wsHub.BroadcastStationStatus(status)
 }
@@ -249,13 +271,19 @@ func (m *StationManager) GetStationStatus() (*models.StationStatus, error) {
 	active := 0
 	idle := 0
 	fault := 0
+	vipCount := 0
 	totalPower := 0.0
+	vipPower := 0.0
 
 	for _, c := range chargers {
 		switch c.Status {
 		case models.ChargerCharging, models.ChargerTrickle:
 			active++
 			totalPower += c.CurrentPower
+			if c.CurrentVehicle != nil && c.CurrentVehicle.IsVIP {
+				vipCount++
+				vipPower += c.CurrentPower
+			}
 		case models.ChargerIdle:
 			idle++
 		case models.ChargerFault:
@@ -266,11 +294,18 @@ func (m *StationManager) GetStationStatus() (*models.StationStatus, error) {
 		}
 	}
 
+	gridLimitEnabled, gridLimitRatio, currentLimitPower := m.powerEngine.GetGridLimitState()
+
 	status := &models.StationStatus{
 		Timestamp:             time.Now(),
 		TotalMaxPower:         m.cfg.TotalMaxPower,
+		CurrentLimitPower:     currentLimitPower,
+		GridLimitMode:         gridLimitEnabled,
+		GridLimitRatio:        gridLimitRatio,
 		CurrentTotalPower:     totalPower,
+		VipProtectedPower:     vipPower,
 		ActiveChargers:        active,
+		VipChargers:           vipCount,
 		IdleChargers:          idle,
 		FaultChargers:         fault,
 		TotalChargingVehicles: active,
@@ -318,8 +353,37 @@ func (m *StationManager) UpdateVehicleSOC(chargerID int, newSOC float64) error {
 	}
 
 	database.DB.Save(&vehicle)
-	_, _ = m.RunPowerAllocation()
+	_, _, _ = m.RunPowerAllocation()
 	return nil
+}
+
+func (m *StationManager) SetGridLimitMode(req GridLimitRequest) (AllocationSummary, error) {
+	m.powerEngine.SetGridLimit(req.Enabled, req.Ratio)
+
+	deadline := time.After(1 * time.Second)
+	done := make(chan AllocationSummary, 1)
+
+	go func() {
+		_, summary, _ := m.RunPowerAllocation()
+		done <- summary
+	}()
+
+	select {
+	case summary := <-done:
+		log.Printf("[GRID_LIMIT] 限电模式切换: enabled=%v, ratio=%.2f, 分配完成耗时<1s",
+			req.Enabled, summary.GridLimitRatio)
+		return summary, nil
+	case <-deadline:
+		log.Printf("[WARN][GRID_LIMIT] 功率分配超时(>1s), 已异步启动")
+		go func() {
+			<-done
+		}()
+		_, gridLimitRatio, _ := m.powerEngine.GetGridLimitState()
+		return AllocationSummary{
+			GridLimitEnabled: req.Enabled,
+			GridLimitRatio:   gridLimitRatio,
+		}, nil
+	}
 }
 
 func (m *StationManager) HardwareStateMachine() *ChargerStateMachine {
