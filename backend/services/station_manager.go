@@ -1,6 +1,7 @@
 package services
 
 import (
+	"log"
 	"supercharger-system/config"
 	"supercharger-system/database"
 	"supercharger-system/models"
@@ -8,16 +9,20 @@ import (
 )
 
 type StationManager struct {
-	cfg         *config.StationConfig
-	powerEngine *PowerAllocationEngine
-	wsHub       *WebSocketHub
+	cfg          *config.StationConfig
+	powerEngine  *PowerAllocationEngine
+	wsHub        *WebSocketHub
+	stateMachine *ChargerStateMachine
 }
 
 func NewStationManager(cfg *config.StationConfig, engine *PowerAllocationEngine, wsHub *WebSocketHub) *StationManager {
+	parser := NewHardwareProtocolParser()
+	stateMachine := NewChargerStateMachine(parser, wsHub)
 	return &StationManager{
-		cfg:         cfg,
-		powerEngine: engine,
-		wsHub:       wsHub,
+		cfg:          cfg,
+		powerEngine:  engine,
+		wsHub:        wsHub,
+		stateMachine: stateMachine,
 	}
 }
 
@@ -46,7 +51,7 @@ func (m *StationManager) PlugIn(req PlugInRequest) (*models.Vehicle, error) {
 	}
 
 	existingVehicle := &models.Vehicle{}
-	result := database.DB.Where("charger_id = ? AND status = ?", req.ChargerID, models.ChargerCharging).First(existingVehicle)
+	result := database.DB.Where("charger_id = ? AND status IN ?", req.ChargerID, []models.ChargerStatus{models.ChargerCharging, models.ChargerTrickle}).First(existingVehicle)
 	if result.Error == nil {
 		existingVehicle.Status = models.ChargerIdle
 		existingVehicle.AllocatedPower = 0
@@ -108,7 +113,7 @@ func (m *StationManager) PlugOut(req PlugOutRequest) error {
 	}
 
 	var vehicles []models.Vehicle
-	database.DB.Where("charger_id = ? AND status = ?", req.ChargerID, models.ChargerCharging).Find(&vehicles)
+	database.DB.Where("charger_id = ? AND status IN ?", req.ChargerID, []models.ChargerStatus{models.ChargerCharging, models.ChargerTrickle}).Find(&vehicles)
 	for i := range vehicles {
 		vehicles[i].Status = models.ChargerIdle
 		vehicles[i].AllocatedPower = 0
@@ -128,7 +133,7 @@ func (m *StationManager) PlugOut(req PlugOutRequest) error {
 
 func (m *StationManager) RunPowerAllocation() (map[int]*AllocationResult, error) {
 	var chargingVehicles []models.Vehicle
-	database.DB.Where("status = ?", models.ChargerCharging).Find(&chargingVehicles)
+	database.DB.Where("status IN ?", []models.ChargerStatus{models.ChargerCharging, models.ChargerTrickle}).Find(&chargingVehicles)
 
 	cvs := make([]ChargingVehicle, 0, len(chargingVehicles))
 	for _, v := range chargingVehicles {
@@ -187,14 +192,21 @@ func (m *StationManager) saveStationStatus(totalPower float64) {
 	active := 0
 	idle := 0
 	fault := 0
+	trickle := 0
 	for _, c := range chargers {
 		switch c.Status {
 		case models.ChargerCharging:
+			active++
+		case models.ChargerTrickle:
+			trickle++
 			active++
 		case models.ChargerIdle:
 			idle++
 		case models.ChargerFault:
 			fault++
+		default:
+			log.Printf("[WARN] saveStationStatus: charger %d has unexpected status %q, treating as idle (NOT fault)", c.ID, c.Status)
+			idle++
 		}
 	}
 
@@ -207,6 +219,7 @@ func (m *StationManager) saveStationStatus(totalPower float64) {
 		FaultChargers:         fault,
 		TotalChargingVehicles: active,
 	}
+	_ = trickle
 	database.DB.Create(&status)
 	m.wsHub.BroadcastStationStatus(status)
 }
@@ -219,7 +232,8 @@ func (m *StationManager) GetAllChargers() ([]models.Charger, error) {
 
 	for i := range chargers {
 		var vehicle models.Vehicle
-		if err := database.DB.Where("charger_id = ? AND status = ?", chargers[i].ID, models.ChargerCharging).
+		if err := database.DB.Where("charger_id = ? AND status IN ?", chargers[i].ID,
+			[]models.ChargerStatus{models.ChargerCharging, models.ChargerTrickle}).
 			Order("created_at desc").First(&vehicle).Error; err == nil {
 			chargers[i].CurrentVehicle = &vehicle
 		}
@@ -239,13 +253,16 @@ func (m *StationManager) GetStationStatus() (*models.StationStatus, error) {
 
 	for _, c := range chargers {
 		switch c.Status {
-		case models.ChargerCharging:
+		case models.ChargerCharging, models.ChargerTrickle:
 			active++
 			totalPower += c.CurrentPower
 		case models.ChargerIdle:
 			idle++
 		case models.ChargerFault:
 			fault++
+		default:
+			log.Printf("[WARN] GetStationStatus: charger %d has unexpected status %q, treating as idle (NOT fault)", c.ID, c.Status)
+			idle++
 		}
 	}
 
@@ -279,7 +296,8 @@ func (m *StationManager) GetPowerHistory(chargerID int, hours int) ([]models.Pow
 
 func (m *StationManager) UpdateVehicleSOC(chargerID int, newSOC float64) error {
 	var vehicle models.Vehicle
-	err := database.DB.Where("charger_id = ? AND status = ?", chargerID, models.ChargerCharging).
+	err := database.DB.Where("charger_id = ? AND status IN ?", chargerID,
+		[]models.ChargerStatus{models.ChargerCharging, models.ChargerTrickle}).
 		Order("created_at desc").First(&vehicle).Error
 	if err != nil {
 		return err
@@ -302,4 +320,8 @@ func (m *StationManager) UpdateVehicleSOC(chargerID int, newSOC float64) error {
 	database.DB.Save(&vehicle)
 	_, _ = m.RunPowerAllocation()
 	return nil
+}
+
+func (m *StationManager) HardwareStateMachine() *ChargerStateMachine {
+	return m.stateMachine
 }

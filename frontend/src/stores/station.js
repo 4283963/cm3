@@ -18,7 +18,7 @@ export const useStationStore = defineStore('station', {
   }),
 
   getters: {
-    activeChargersList: (state) => state.chargers.filter(c => c.status === 'charging'),
+    activeChargersList: (state) => state.chargers.filter(c => c.status === 'charging' || c.status === 'trickle'),
     powerUsagePercent: (state) =>
       state.stationStatus.totalMaxPower > 0
         ? (state.stationStatus.currentTotalPower / state.stationStatus.totalMaxPower) * 100
@@ -79,7 +79,7 @@ export const useStationStore = defineStore('station', {
 
     updateChargers(chargers) {
       this.chargers = chargers
-      this.stationStatus.activeChargers = chargers.filter(c => c.status === 'charging').length
+      this.stationStatus.activeChargers = chargers.filter(c => c.status === 'charging' || c.status === 'trickle').length
       this.stationStatus.idleChargers = chargers.filter(c => c.status === 'idle').length
       this.stationStatus.faultChargers = chargers.filter(c => c.status === 'fault').length
       this.stationStatus.currentTotalPower = chargers.reduce((sum, c) => sum + (c.currentPower || 0), 0)

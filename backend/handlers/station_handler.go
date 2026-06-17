@@ -20,6 +20,47 @@ func NewStationHandler(sm *services.StationManager, ws *services.WebSocketHub) *
 	}
 }
 
+type HardwareFrameRequest struct {
+	ChargerID int    `json:"chargerId" binding:"required"`
+	Frame     string `json:"frame" binding:"required"`
+}
+
+func (h *StationHandler) HandleHardwareFrame(c *gin.Context) {
+	var req HardwareFrameRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	parser := services.NewHardwareProtocolParser()
+	event, err := parser.ParseSerialFrame(req.ChargerID, req.Frame)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "帧解析失败: " + err.Error(),
+		})
+		return
+	}
+
+	stateMachine := h.stationManager.HardwareStateMachine()
+	if err := stateMachine.HandleHardwareEvent(event); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "状态处理失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":   true,
+		"message":   "硬件帧处理成功",
+		"eventType": event.EventType,
+	})
+}
+
 func (h *StationHandler) PlugIn(c *gin.Context) {
 	var req services.PlugInRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

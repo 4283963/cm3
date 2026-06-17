@@ -9,6 +9,7 @@ type ChargerStatus string
 const (
 	ChargerIdle     ChargerStatus = "idle"
 	ChargerCharging ChargerStatus = "charging"
+	ChargerTrickle  ChargerStatus = "trickle"
 	ChargerFault    ChargerStatus = "fault"
 	ChargerReserved ChargerStatus = "reserved"
 )

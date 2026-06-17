@@ -32,6 +32,7 @@ func SetupRoutes(
 			station.GET("/power-history", stationHandler.GetPowerHistory)
 			station.POST("/update-soc", stationHandler.UpdateSOC)
 			station.POST("/allocate", stationHandler.TriggerAllocation)
+			station.POST("/hardware-frame", stationHandler.HandleHardwareFrame)
 		}
 	}
 

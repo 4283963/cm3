@@ -61,7 +61,7 @@ func simulateSOCConsumption(sm *services.StationManager) {
 	}
 
 	for _, c := range chargers {
-		if c.Status != "charging" || c.CurrentVehicle == nil || c.CurrentPower <= 0 {
+		if (c.Status != "charging" && c.Status != "trickle") || c.CurrentVehicle == nil || c.CurrentPower <= 0 {
 			continue
 		}
 

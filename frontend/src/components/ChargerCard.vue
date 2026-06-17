@@ -15,7 +15,7 @@
       </div>
     </div>
 
-    <div v-if="isCharging && charger.currentVehicle" class="charging-info">
+    <div v-if="isChargingOrTrickle && charger.currentVehicle" class="charging-info">
       <div class="vehicle-info">
         <el-icon><Van /></el-icon>
         <span class="plate">{{ charger.currentVehicle.licensePlate || charger.currentVehicle.vin }}</span>
@@ -30,6 +30,7 @@
           <div class="soc-bar">
             <div
               class="soc-fill charging-bar"
+              :class="{ 'trickle-bar': charger.status === 'trickle' }"
               :style="{ width: `${socPercent}%`, background: socColor }"
             ></div>
             <div class="soc-target" :style="{ left: `${charger.currentVehicle.targetSOC}%` }">
@@ -37,6 +38,10 @@
               <span>{{ charger.currentVehicle.targetSOC }}%</span>
             </div>
           </div>
+        </div>
+        <div v-if="charger.status === 'trickle'" class="trickle-tip">
+          <el-icon><Cpu /></el-icon>
+          涓流充电阶段（慢速，保护电池）
         </div>
       </div>
 
@@ -89,7 +94,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Van, Power, Warning, Switch } from '@element-plus/icons-vue'
+import { Van, Power, Warning, Switch, Cpu } from '@element-plus/icons-vue'
 
 const props = defineProps({
   charger: { type: Object, required: true },
@@ -98,12 +103,16 @@ defineEmits(['plug-out', 'view-detail'])
 
 const STATUS_MAP = {
   charging: '充电中',
+  trickle: '涓流充电',
   idle: '空闲',
   fault: '故障',
   reserved: '预约中',
 }
 
 const isCharging = computed(() => props.charger.status === 'charging')
+const isChargingOrTrickle = computed(() =>
+  props.charger.status === 'charging' || props.charger.status === 'trickle'
+)
 const statusText = computed(() => STATUS_MAP[props.charger.status] || props.charger.status)
 
 const socPercent = computed(() => {
@@ -148,6 +157,15 @@ const formatTime = (t) => {
 
     &:hover {
       box-shadow: 0 8px 24px rgba(103, 194, 58, 0.2);
+    }
+  }
+
+  &.trickle {
+    border-color: rgba(64, 158, 255, 0.4);
+    background: linear-gradient(145deg, rgba(26, 44, 80, 0.6), rgba(19, 38, 66, 0.85));
+
+    &:hover {
+      box-shadow: 0 8px 24px rgba(64, 158, 255, 0.2);
     }
   }
 
@@ -216,6 +234,17 @@ const formatTime = (t) => {
 
     .status-dot {
       animation: pulse 1.5s infinite;
+    }
+  }
+}
+
+.trickle {
+  .status-badge {
+    background: rgba(64, 158, 255, 0.15);
+    color: #409eff;
+
+    .status-dot {
+      animation: pulse 2.5s infinite;
     }
   }
 }
@@ -390,5 +419,23 @@ const formatTime = (t) => {
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.6; transform: scale(1.2); }
+}
+
+.trickle-tip {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: rgba(64, 158, 255, 0.1);
+  border: 1px dashed rgba(64, 158, 255, 0.3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #8cc5ff;
+}
+
+.trickle-bar {
+  animation-duration: 4s !important;
+  filter: saturate(0.7);
 }
 </style>

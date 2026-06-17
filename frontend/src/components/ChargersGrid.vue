@@ -5,6 +5,7 @@
       <span>充电桩实时状态</span>
       <div class="legend">
         <span class="legend-item"><i class="dot green"></i>充电中</span>
+        <span class="legend-item"><i class="dot blue"></i>涓流充电</span>
         <span class="legend-item"><i class="dot gray"></i>空闲</span>
         <span class="legend-item"><i class="dot red"></i>故障</span>
       </div>
@@ -74,6 +75,7 @@ const chargers = computed(() => store.chargers)
     display: inline-block;
 
     &.green { background: #67c23a; box-shadow: 0 0 6px #67c23a; }
+    &.blue { background: #409eff; box-shadow: 0 0 6px #409eff; }
     &.gray { background: #606266; }
     &.red { background: #f56c6c; box-shadow: 0 0 6px #f56c6c; }
   }
